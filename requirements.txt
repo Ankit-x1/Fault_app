@@ -2,6 +2,9 @@ torch
 pandas
 numpy
 scikit-learn
-Flask
 joblib
 onnxruntime
+fastapi
+uvicorn
+python-multipart
+jinja2

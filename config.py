@@ -24,7 +24,7 @@ N_FEATURES = len(SENSOR_FEATURES) # Number of features from the IMU sensor
 # Model hyperparameters
 SEQUENCE_LENGTH = 50 # Increased for more context in time series
 EMBEDDING_DIM = 64
-NUM_EPOCHS = 100 # Increased for better training
+NUM_EPOCHS = 20 # Decreased for faster training
 BATCH_SIZE = 64 # Increased for faster training
 LEARNING_RATE = 1e-3
 
@@ -38,3 +38,8 @@ ANOMALY_DATA_POINTS = 500
 NOISE_LEVEL = 0.02 # General noise in sensor readings
 SPIKE_MAGNITUDE = 1.5 # Magnitude of anomaly spikes
 DRIFT_MAGNITUDE = 0.5 # Magnitude of anomaly drift
+
+# Note: For production deployments, consider loading sensitive or environment-specific
+# configurations from environment variables (e.g., using os.getenv) or external
+# configuration files (e.g., YAML, JSON) to enhance flexibility and security.
+

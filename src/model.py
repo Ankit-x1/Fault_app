@@ -2,6 +2,9 @@ import torch
 from torch import nn
 import sys
 import os
+import logging # Import logging
+
+logger = logging.getLogger(__name__) # Get logger instance
 
 # Add the parent directory to sys.path to import config
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -71,17 +74,22 @@ def export_to_onnx(model, onnx_path, sequence_length, n_features):
     """
     Exports the PyTorch model to ONNX format.
     """
-    # Create a dummy input for ONNX export
-    dummy_input = torch.randn(1, sequence_length, n_features, requires_grad=True)
-    
-    torch.onnx.export(model,                    # model being run
-                      dummy_input,              # model input (or a tuple for multiple inputs)
-                      onnx_path,                # where to save the model (can be a file or file-like object)
-                      export_params=True,       # store the trained parameter weights inside the model file
-                      opset_version=11,         # the ONNX version to export the model to
-                      do_constant_folding=True, # whether to execute constant folding for optimization
-                      input_names = ['input'],   # the names for the input of the graph
-                      output_names = ['output'], # the names for the output of the graph
-                      dynamic_axes={'input' : {0 : 'batch_size'},    # variable length axes
-                                    'output' : {0 : 'batch_size'}})
-    print(f"Model successfully exported to ONNX at {onnx_path}")
+    logger.info(f"Attempting to export model to ONNX at {onnx_path}")
+    try:
+        # Create a dummy input for ONNX export
+        dummy_input = torch.randn(1, sequence_length, n_features, requires_grad=True)
+        
+        torch.onnx.export(model,                    # model being run
+                          dummy_input,              # model input (or a tuple for multiple inputs)
+                          onnx_path,                # where to save the model (can be a file or file-like object)
+                          export_params=True,       # store the trained parameter weights inside the model file
+                          opset_version=11,         # the ONNX version to export the model to
+                          do_constant_folding=True, # whether to execute constant folding for optimization
+                          input_names = ['input'],   # the names for the input of the graph
+                          output_names = ['output'], # the names for the output of the graph
+                          dynamic_axes={'input' : {0 : 'batch_size'},    # variable length axes
+                                        'output' : {0 : 'batch_size'}})
+        logger.info(f"Model successfully exported to ONNX at {onnx_path}")
+    except Exception as e:
+        logger.error(f"Error exporting model to ONNX at {onnx_path}. Error: {e}", exc_info=True)
+        raise RuntimeError(f"Failed to export model to ONNX: {e}")

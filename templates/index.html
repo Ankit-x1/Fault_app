@@ -36,18 +36,23 @@
         <hr style="margin: 30px 0;">
 
         <section>
-            <h2>Detect Faults (Single Point / Stream)</h2>
-            <p>Enter a single sensor reading (6 comma-separated values: accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z). The system will buffer these readings to form sequences of 50 points for detection.</p>
-            <p>Example: <code>0.1,0.2,9.8,0.01,0.02,0.005</code></p>
-            <textarea id="sensorReadings" placeholder="Enter sensor readings (e.g., 0.1,0.2,9.8,0.01,0.02,0.005)"></textarea>
+            <h2>Detect Faults (Full Sequence)</h2>
+            <p>Enter exactly <span id="sequenceLengthDisplay">{{ SEQUENCE_LENGTH }}</span> lines of sensor readings. Each line must contain <span id="nFeaturesDisplay">{{ N_FEATURES }}</span> comma-separated values for the following features: {{ SENSOR_FEATURES_STRING }}.</p>
+            <p>Example for {{ N_FEATURES }} features and {{ SEQUENCE_LENGTH }} sequence length (repeat 50 times):</p>
+            <pre>0.1,0.2,9.8,0.01,0.02,0.005
+0.1,0.2,9.8,0.01,0.02,0.005
+...</pre>
+            <textarea id="sensorReadings" placeholder="Enter {{ SEQUENCE_LENGTH }} lines of sensor readings"></textarea>
             <button id="detectButton">Detect Anomalies</button>
             <div id="detectResponse" class="response"></div>
         </section>
     </div>
 
     <script>
-        const SEQUENCE_LENGTH = 50;
-        const N_FEATURES = 6;
+        // Dynamically load configuration from the backend
+        const SEQUENCE_LENGTH = {{ SEQUENCE_LENGTH }};
+        const N_FEATURES = {{ N_FEATURES }};
+        const SENSOR_FEATURES_STRING = "{{ SENSOR_FEATURES_STRING }}";
 
         document.getElementById('trainButton').addEventListener('click', async () => {
             const responseDiv = document.getElementById('trainResponse');
@@ -76,19 +81,36 @@
             responseDiv.className = 'response info';
 
             const readingsInput = document.getElementById('sensorReadings').value;
-            const sensorReadings = readingsInput.split(',').map(Number).filter(n => !isNaN(n));
+            const lines = readingsInput.trim().split('\\n').filter(line => line.trim() !== '');
 
-            if (sensorReadings.length !== N_FEATURES) {
-                responseDiv.innerHTML = `<span class="error">Please enter exactly ${N_FEATURES} comma-separated sensor readings.</span>`;
+            if (lines.length === 0) {
+                responseDiv.innerHTML = `<span class="error">Please enter sensor readings.</span>`;
                 responseDiv.className = 'response error';
                 return;
+            }
+
+            if (lines.length !== SEQUENCE_LENGTH) {
+                responseDiv.innerHTML = `<span class="error">Please enter exactly ${SEQUENCE_LENGTH} lines of sensor readings. You entered ${lines.length}.</span>`;
+                responseDiv.className = 'response error';
+                return;
+            }
+
+            const sensorReadings2D = [];
+            for (const line of lines) {
+                const values = line.split(',').map(Number).filter(n => !isNaN(n));
+                if (values.length !== N_FEATURES) {
+                    responseDiv.innerHTML = `<span class="error">Each line must contain exactly ${N_FEATURES} comma-separated sensor readings. Found ${values.length} in a line.</span>`;
+                    responseDiv.className = 'response error';
+                    return;
+                }
+                sensorReadings2D.push(values);
             }
 
             try {
                 const response = await fetch('/api/detect', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sensor_readings: sensorReadings })
+                    body: JSON.stringify({ sensor_readings: sensorReadings2D }) // Sending as 2D array of floats
                 });
                 const data = await response.json();
                 
@@ -104,9 +126,6 @@
                     }
                     responseDiv.innerHTML = resultHtml;
                     responseDiv.className = 'response success';
-                } else if (data.status === 'info') {
-                    responseDiv.innerHTML = `<span class="info">Buffering data:</span> ${data.message}`;
-                    responseDiv.className = 'response info';
                 } else {
                     responseDiv.innerHTML = `<span class="error">Detection failed:</span> ${data.message}`;
                     responseDiv.className = 'response error';

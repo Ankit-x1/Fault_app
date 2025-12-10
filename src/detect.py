@@ -16,8 +16,7 @@ import config
 from data_loader import load_and_preprocess_data
 from model import create_autoencoder
 
-# Global variable to store sensor readings for real-time buffering
-_sensor_reading_buffer = np.zeros((0, config.N_FEATURES))
+
 
 def _get_model_and_session(device):
     logger.info("Attempting to load model (preferring ONNX).")
@@ -29,39 +28,70 @@ def _get_model_and_session(device):
         try:
             session = rt.InferenceSession(config.ONNX_MODEL_PATH, providers=['CPUExecutionProvider'])
             logger.info(f"Loaded ONNX model from {config.ONNX_MODEL_PATH}")
-            return model, session
         except Exception as e:
-            logger.warning(f"Could not load ONNX model. Falling back to PyTorch. Error: {e}")
+            logger.warning(f"Could not load ONNX model from {config.ONNX_MODEL_PATH}. Falling back to PyTorch. Error: {e}", exc_info=True)
             session = None # Reset session if ONNX fails
 
     # Fallback to PyTorch model if ONNX failed or not present
-    if model is None:
-        model = create_autoencoder().to(device)
-        model.load_state_dict(torch.load(config.PYTORCH_MODEL_PATH, map_location=device))
-        model.eval()
-        logger.info(f"Loaded PyTorch model from {config.PYTORCH_MODEL_PATH}")
+    if session is None: # Only attempt PyTorch if ONNX was not loaded
+        if os.path.exists(config.PYTORCH_MODEL_PATH):
+            try:
+                model = create_autoencoder().to(device)
+                model.load_state_dict(torch.load(config.PYTORCH_MODEL_PATH, map_location=device))
+                model.eval()
+                logger.info(f"Loaded PyTorch model from {config.PYTORCH_MODEL_PATH}")
+            except Exception as e:
+                logger.error(f"Error loading PyTorch model from {config.PYTORCH_MODEL_PATH}. Error: {e}", exc_info=True)
+                raise RuntimeError(f"Failed to load PyTorch model: {e}")
+        else:
+            raise RuntimeError(f"No ONNX or PyTorch model found at {config.ONNX_MODEL_PATH} or {config.PYTORCH_MODEL_PATH}")
     
     return model, session
 
 
-def detect(raw_data_point=None, data_stream_buffer=None):
+def detect(data_stream_buffer=None):
     logger.info("Starting anomaly detection.")
-    global _sensor_reading_buffer
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
 
     try:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info(f"Using device: {device}")
+
         # Load the scaler
-        scaler = joblib.load(config.SCALER_PATH)
-        logger.info(f"Scaler loaded from {config.SCALER_PATH}")
+        try:
+            scaler = joblib.load(config.SCALER_PATH)
+            logger.info(f"Scaler loaded from {config.SCALER_PATH}")
+        except FileNotFoundError as e:
+            logger.error(f"Scaler file not found: {config.SCALER_PATH}. Error: {e}", exc_info=True)
+            return {"status": "error", "message": f"Scaler file not found: {e}"}
+        except Exception as e:
+            logger.error(f"Error loading scaler from {config.SCALER_PATH}. Error: {e}", exc_info=True)
+            return {"status": "error", "message": f"Error loading scaler: {e}"}
 
         # Load trained PyTorch model or ONNX session
-        model, onnx_session = _get_model_and_session(device)
+        try:
+            model, onnx_session = _get_model_and_session(device)
+        except RuntimeError as e:
+            logger.error(f"Model loading failed: {e}", exc_info=True)
+            return {"status": "error", "message": f"Model loading failed: {e}"}
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during model loading: {e}", exc_info=True)
+            return {"status": "error", "message": f"An unexpected error occurred during model loading: {e}"}
+
+        if model is None and onnx_session is None:
+            return {"status": "error", "message": "No valid model (PyTorch or ONNX) could be loaded."}
 
         # 1. Determine threshold from normal training data
         logger.info("Determining anomaly threshold from normal data.")
-        X_train_for_threshold, _ = load_and_preprocess_data(file_path=config.NORMAL_DATA_PATH, scaler=scaler)
+        try:
+            X_train_for_threshold, _ = load_and_preprocess_data(file_path=config.NORMAL_DATA_PATH, scaler=scaler)
+            if X_train_for_threshold.shape[0] < config.SEQUENCE_LENGTH:
+                return {"status": "error", "message": f"Normal data for threshold determination must contain at least {config.SEQUENCE_LENGTH} samples."}
+        except DataLoaderError as e:
+            logger.error(f"Error loading or preprocessing normal data for threshold: {e}", exc_info=True)
+            return {"status": "error", "message": f"Error loading or preprocessing normal data for threshold: {e}"}
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during threshold data processing: {e}", exc_info=True)
+            return {"status": "error", "message": f"An unexpected error occurred during threshold data processing: {e}"}
 
         with torch.no_grad():
             if onnx_session:
@@ -83,39 +113,29 @@ def detect(raw_data_point=None, data_stream_buffer=None):
         data_to_form_sequences = None
         if data_stream_buffer is not None:
             logger.info("Processing data from provided data_stream_buffer.")
-            if data_stream_buffer.shape[0] < config.SEQUENCE_LENGTH:
-                return {"status": "error", "message": f"Data stream buffer must contain at least {config.SEQUENCE_LENGTH} samples."}
+            if data_stream_buffer.shape[0] != config.SEQUENCE_LENGTH:
+                return {"status": "error", "message": f"Data stream buffer must contain exactly {config.SEQUENCE_LENGTH} samples for detection."}
             data_to_form_sequences = data_stream_buffer
-        elif raw_data_point is not None:
-            logger.info(f"Processing single raw data point: {raw_data_point}")
-            if not isinstance(raw_data_point, list) or len(raw_data_point) != config.N_FEATURES:
-                return {"status": "error", "message": f"raw_data_point must be a list of {config.N_FEATURES} sensor readings."}
-            
-            new_point_np = np.array(raw_data_point).reshape(1, -1)
-            _sensor_reading_buffer = np.vstack((_sensor_reading_buffer, new_point_np))
-
-            if _sensor_reading_buffer.shape[0] > config.SEQUENCE_LENGTH:
-                _sensor_reading_buffer = _sensor_reading_buffer[-config.SEQUENCE_LENGTH:]
-            
-            if _sensor_reading_buffer.shape[0] < config.SEQUENCE_LENGTH:
-                logger.info(f"Buffer filling: {_sensor_reading_buffer.shape[0]}/{config.SEQUENCE_LENGTH} points. No detection performed yet.")
-                return {"status": "info", "message": f"Buffer filling: {_sensor_reading_buffer.shape[0]}/{config.SEQUENCE_LENGTH} points. Detection will start once buffer is full."}
-            
-            data_to_form_sequences = _sensor_reading_buffer
-
         else:
             logger.info(f"Processing data from test file: {config.TEST_DATA_PATH}")
-            pass 
+            pass # Use default test data if no stream is provided (for CLI/testing purposes) 
 
 
         # 3. Process data for detection
-        if data_to_form_sequences is not None:
-            X_detection_sequences, _ = load_and_preprocess_data(data_stream=data_to_form_sequences, scaler=scaler)
-        else:
-            X_detection_sequences, _ = load_and_preprocess_data(file_path=config.TEST_DATA_PATH, scaler=scaler)
-
-        if X_detection_sequences.shape[0] == 0:
-             return {"status": "error", "message": "No sequences could be formed from the provided data for detection."}
+        try:
+            if data_to_form_sequences is not None:
+                X_detection_sequences, _ = load_and_preprocess_data(data_stream=data_to_form_sequences, scaler=scaler)
+            else:
+                X_detection_sequences, _ = load_and_preprocess_data(file_path=config.TEST_DATA_PATH, scaler=scaler)
+            
+            if X_detection_sequences.shape[0] == 0:
+                return {"status": "error", "message": "No sequences could be formed from the provided data for detection."}
+        except DataLoaderError as e:
+            logger.error(f"Error loading or preprocessing detection data: {e}", exc_info=True)
+            return {"status": "error", "message": f"Error loading or preprocessing detection data: {e}"}
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during detection data processing: {e}", exc_info=True)
+            return {"status": "error", "message": f"An unexpected error occurred during detection data processing: {e}"}
 
 
         X_detection_tensor = torch.from_numpy(X_detection_sequences).float().to(device)
@@ -162,25 +182,12 @@ if __name__ == '__main__':
     results = detect()
     logger.info(f"CLI Test File Detection Results: {results}")
 
-    logger.info("\nSimulating real-time detection (single points):")
-    _sensor_reading_buffer = np.zeros((0, config.N_FEATURES)) 
-    
-    normal_point = np.random.rand(config.N_FEATURES).tolist()
-    anomaly_point = (np.array(normal_point) + np.array([config.SPIKE_MAGNITUDE] + [0]*(config.N_FEATURES-1))).tolist()
+    logger.info("\nSimulating real-time detection (full buffer):")
+    # To test real-time simulation, manually create a buffer of SEQUENCE_LENGTH
+    # and pass it as data_stream_buffer
+    sample_data_point = np.random.rand(config.N_FEATURES).tolist() # Example single point
+    simulated_buffer = [sample_data_point] * config.SEQUENCE_LENGTH # Create a buffer
 
-    simulated_stream = []
-    for _ in range(config.SEQUENCE_LENGTH - 5):
-        simulated_stream.append(normal_point)
-    for _ in range(5):
-        simulated_stream.append(normal_point)
-    simulated_stream.append(anomaly_point)
-    
-    for i, point in enumerate(simulated_stream):
-        logger.info(f"Processing point {i+1}: {point}")
-        detection_result = detect(raw_data_point=point)
-        if detection_result["status"] == "success" and detection_result["number_of_anomalies"] > 0:
-            logger.info(f"  Anomaly Detected! Indices: {detection_result['anomaly_indices']}")
-        elif detection_result["status"] == "info":
-            logger.info(f"  {detection_result['message']}")
-        else:
-            logger.info(f"  No anomaly detected.")
+    logger.info(f"Processing a simulated buffer of {config.SEQUENCE_LENGTH} points.")
+    detection_result = detect(data_stream_buffer=np.array(simulated_buffer))
+    logger.info(f"Simulated Buffer Detection Results: {detection_result}")
