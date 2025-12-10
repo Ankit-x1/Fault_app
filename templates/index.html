@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IMU Fault Detection App</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f7f6; color: #333; }
+        .container { max-width: 900px; margin: 30px auto; background: #fff; padding: 30px; border-radius: 10px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+        h1, h2 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; margin-bottom: 20px; }
+        button { padding: 10px 20px; margin-right: 10px; background-color: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; transition: background-color 0.3s ease; }
+        button:hover { background-color: #2980b9; }
+        textarea { width: 100%; padding: 12px; margin-top: 15px; border: 1px solid #ccc; border-radius: 5px; min-height: 120px; font-size: 14px; resize: vertical; }
+        .response { background-color: #e9ecef; padding: 15px; margin-top: 25px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; border-left: 5px solid #3498db; }
+        .success { color: #28a745; font-weight: bold; }
+        .error { color: #dc3545; font-weight: bold; }
+        .info { color: #17a2b8; font-weight: bold; }
+        label { display: block; margin-top: 15px; font-weight: bold; }
+        input[type="text"] { width: calc(100% - 22px); padding: 10px; border: 1px solid #ccc; border-radius: 5px; margin-top: 5px; }
+        .feature-input-group { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+        .feature-input-group div { flex: 1 1 150px; }
+        .feature-input-group input { width: calc(100% - 22px); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>IMU Fault Detection Application</h1>
+
+        <section>
+            <h2>Train Model</h2>
+            <p>Click the button below to train the autoencoder model on simulated IMU (Accelerometer and Gyroscope) sensor data. This might take a few minutes (approx. 100 epochs). A new model (PyTorch & ONNX) and scaler will be saved.</p>
+            <button id="trainButton">Start Training</button>
+            <div id="trainResponse" class="response"></div>
+        </section>
+
+        <hr style="margin: 30px 0;">
+
+        <section>
+            <h2>Detect Faults (Single Point / Stream)</h2>
+            <p>Enter a single sensor reading (6 comma-separated values: accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z). The system will buffer these readings to form sequences of 50 points for detection.</p>
+            <p>Example: <code>0.1,0.2,9.8,0.01,0.02,0.005</code></p>
+            <textarea id="sensorReadings" placeholder="Enter sensor readings (e.g., 0.1,0.2,9.8,0.01,0.02,0.005)"></textarea>
+            <button id="detectButton">Detect Anomalies</button>
+            <div id="detectResponse" class="response"></div>
+        </section>
+    </div>
+
+    <script>
+        const SEQUENCE_LENGTH = 50;
+        const N_FEATURES = 6;
+
+        document.getElementById('trainButton').addEventListener('click', async () => {
+            const responseDiv = document.getElementById('trainResponse');
+            responseDiv.innerHTML = '<span class="info">Training model... Please wait. This may take a while.</span>';
+            responseDiv.className = 'response info';
+
+            try {
+                const response = await fetch('/api/train', { method: 'POST' });
+                const data = await response.json();
+                if (data.status === 'success') {
+                    responseDiv.innerHTML = `<span class="success">Training successful!</span><br>${data.message}<br><pre>${data.log}</pre>`;
+                    responseDiv.className = 'response success';
+                } else {
+                    responseDiv.innerHTML = `<span class="error">Training failed:</span> ${data.message}`;
+                    responseDiv.className = 'response error';
+                }
+            } catch (error) {
+                responseDiv.innerHTML = `<span class="error">An error occurred during training:</span> ${error.message}`;
+                responseDiv.className = 'response error';
+            }
+        });
+
+        document.getElementById('detectButton').addEventListener('click', async () => {
+            const responseDiv = document.getElementById('detectResponse');
+            responseDiv.innerHTML = '<span class="info">Detecting anomalies...</span>';
+            responseDiv.className = 'response info';
+
+            const readingsInput = document.getElementById('sensorReadings').value;
+            const sensorReadings = readingsInput.split(',').map(Number).filter(n => !isNaN(n));
+
+            if (sensorReadings.length !== N_FEATURES) {
+                responseDiv.innerHTML = `<span class="error">Please enter exactly ${N_FEATURES} comma-separated sensor readings.</span>`;
+                responseDiv.className = 'response error';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/detect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sensor_readings: sensorReadings })
+                });
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    const results = data.results;
+                    let resultHtml = `<span class="success">Detection successful!</span><br>`;
+                    resultHtml += `Anomaly Threshold: ${results.anomaly_threshold ? results.anomaly_threshold.toFixed(4) : 'N/A'}<br>`;
+                    if (results.number_of_anomalies > 0) {
+                        resultHtml += `Number of Anomalies Found: ${results.number_of_anomalies}<br>`;
+                        resultHtml += `Anomaly Indices: ${results.anomaly_indices.join(', ')}`;
+                    } else {
+                        resultHtml += `No anomalies detected.`;
+                    }
+                    responseDiv.innerHTML = resultHtml;
+                    responseDiv.className = 'response success';
+                } else if (data.status === 'info') {
+                    responseDiv.innerHTML = `<span class="info">Buffering data:</span> ${data.message}`;
+                    responseDiv.className = 'response info';
+                } else {
+                    responseDiv.innerHTML = `<span class="error">Detection failed:</span> ${data.message}`;
+                    responseDiv.className = 'response error';
+                }
+            } catch (error) {
+                responseDiv.innerHTML = `<span class="error">An error occurred during detection:</span> ${error.message}`;
+                responseDiv.className = 'response error';
+            }
+        });
+    </script>
+</body>
+</html>
