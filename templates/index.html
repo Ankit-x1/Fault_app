@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IMU Fault Detection App</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f7f6; color: #333; }
         .container { max-width: 900px; margin: 30px auto; background: #fff; padding: 30px; border-radius: 10px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
@@ -31,6 +32,9 @@
             <p>Click the button below to train the autoencoder model on simulated IMU (Accelerometer and Gyroscope) sensor data. This might take a few minutes (approx. 100 epochs). A new model (PyTorch & ONNX) and scaler will be saved.</p>
             <button id="trainButton">Start Training</button>
             <div id="trainResponse" class="response"></div>
+            <div style="width: 80%; margin: 20px auto;">
+                <canvas id="trainingLossChart"></canvas>
+            </div>
         </section>
 
         <hr style="margin: 30px 0;">
@@ -45,6 +49,12 @@
             <textarea id="sensorReadings" placeholder="Enter {{ SEQUENCE_LENGTH }} lines of sensor readings"></textarea>
             <button id="detectButton">Detect Anomalies</button>
             <div id="detectResponse" class="response"></div>
+            <div style="width: 80%; margin: 20px auto;">
+                <canvas id="sensorReconstructionChart"></canvas>
+            </div>
+            <div style="width: 80%; margin: 20px auto;">
+                <canvas id="reconstructionLossChart"></canvas>
+            </div>
         </section>
     </div>
 
@@ -65,9 +75,55 @@
                 if (data.status === 'success') {
                     responseDiv.innerHTML = `<span class="success">Training successful!</span><br>${data.message}<br><pre>${data.log}</pre>`;
                     responseDiv.className = 'response success';
+
+                    // Render chart
+                    const ctx = document.getElementById('trainingLossChart').getContext('2d');
+                    if (window.trainingChart) {
+                        window.trainingChart.destroy(); // Destroy previous chart instance if it exists
+                    }
+                    window.trainingChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: data.losses.map((_, i) => `Epoch ${i + 1}`),
+                            datasets: [{
+                                label: 'Training Loss',
+                                data: data.losses,
+                                borderColor: 'rgb(75, 192, 192)',
+                                tension: 0.1,
+                                fill: false
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                title: {
+                                    display: true,
+                                    text: 'Model Training Loss Over Epochs'
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    title: {
+                                        display: true,
+                                        text: 'Epoch'
+                                    }
+                                },
+                                y: {
+                                    title: {
+                                        display: true,
+                                        text: 'Loss'
+                                    }
+                                }
+                            }
+                        }
+                    });
+
                 } else {
                     responseDiv.innerHTML = `<span class="error">Training failed:</span> ${data.message}`;
                     responseDiv.className = 'response error';
+                    if (window.trainingChart) {
+                        window.trainingChart.destroy(); // Clear chart on error
+                    }
                 }
             } catch (error) {
                 responseDiv.innerHTML = `<span class="error">An error occurred during training:</span> ${error.message}`;
@@ -115,22 +171,124 @@
                 const data = await response.json();
                 
                 if (data.status === 'success') {
-                    const results = data.results;
+                    // Extract data for charts
+                    const inputData = data.input_data;
+                    const reconstructionData = data.reconstruction_data;
+                    const reconstructionLoss = data.reconstruction_loss;
+                    const anomalyThreshold = data.anomaly_threshold;
+                    const anomalyIndices = data.anomaly_indices;
+
                     let resultHtml = `<span class="success">Detection successful!</span><br>`;
-                    resultHtml += `Anomaly Threshold: ${results.anomaly_threshold ? results.anomaly_threshold.toFixed(4) : 'N/A'}<br>`;
-                    if (results.number_of_anomalies > 0) {
-                        resultHtml += `Number of Anomalies Found: ${results.number_of_anomalies}<br>`;
-                        resultHtml += `Anomaly Indices: ${results.anomaly_indices.join(', ')}`;
+                    resultHtml += `Anomaly Threshold: ${anomalyThreshold ? anomalyThreshold.toFixed(4) : 'N/A'}<br>`;
+                    if (data.number_of_anomalies > 0) {
+                        resultHtml += `Number of Anomalies Found: ${data.number_of_anomalies}<br>`;
+                        resultHtml += `Anomaly Indices: ${anomalyIndices.join(', ')}`;
                     } else {
                         resultHtml += `No anomalies detected.`;
                     }
                     responseDiv.innerHTML = resultHtml;
                     responseDiv.className = 'response success';
+
+                    // --- Render Sensor Readings vs. Reconstruction Chart ---
+                    const ctx1 = document.getElementById('sensorReconstructionChart').getContext('2d');
+                    if (window.sensorReconstructionChart) {
+                        window.sensorReconstructionChart.destroy();
+                    }
+
+                    // Prepare datasets for sensor readings vs reconstruction
+                    const labels = Array.from({ length: SEQUENCE_LENGTH }, (_, i) => i);
+                    const datasets = [];
+                    for (let i = 0; i < N_FEATURES; i++) {
+                        datasets.push({
+                            label: `Input Feature ${i+1} (${SENSOR_FEATURES_STRING.split(', ')[i]})`,
+                            data: inputData.map(row => row[i]),
+                            borderColor: `hsl(${i * (360 / N_FEATURES)}, 70%, 50%)`,
+                            fill: false,
+                            tension: 0.1,
+                            pointRadius: 1 // Smaller points for clarity
+                        });
+                        datasets.push({
+                            label: `Recon Feature ${i+1}`,
+                            data: reconstructionData.map(row => row[i]),
+                            borderColor: `hsl(${i * (360 / N_FEATURES)}, 70%, 80%)`,
+                            borderDash: [5, 5], // Dashed line for reconstruction
+                            fill: false,
+                            tension: 0.1,
+                            pointRadius: 0 // No points for reconstruction
+                        });
+                    }
+                    window.sensorReconstructionChart = new Chart(ctx1, {
+                        type: 'line',
+                        data: { labels, datasets },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                title: { display: true, text: 'Sensor Readings vs. Reconstruction' }
+                            },
+                            scales: {
+                                x: { title: { display: true, text: 'Time Step' } },
+                                y: { title: { display: true, text: 'Value' } }
+                            }
+                        }
+                    });
+
+
+                    // --- Render Reconstruction Error vs. Threshold Chart ---
+                    const ctx2 = document.getElementById('reconstructionLossChart').getContext('2d');
+                    if (window.reconstructionLossChart) {
+                        window.reconstructionLossChart.destroy();
+                    }
+
+                    const anomalyPoints = anomalyIndices.map(index => ({ x: index, y: reconstructionLoss[index] }));
+
+                    window.reconstructionLossChart = new Chart(ctx2, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: 'Reconstruction Loss',
+                                data: reconstructionLoss,
+                                borderColor: 'rgb(255, 99, 132)',
+                                backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                                fill: true,
+                                tension: 0.1,
+                                pointRadius: 3
+                            }, {
+                                label: 'Anomaly Threshold',
+                                data: Array(SEQUENCE_LENGTH).fill(anomalyThreshold),
+                                borderColor: 'rgb(54, 162, 235)',
+                                borderWidth: 2,
+                                borderDash: [5, 5],
+                                fill: false,
+                                pointRadius: 0
+                            }, {
+                                label: 'Anomalies',
+                                data: anomalyPoints.map(p => ({x: p.x, y: p.y})),
+                                backgroundColor: 'rgb(255, 0, 0)',
+                                borderColor: 'rgb(255, 0, 0)',
+                                pointRadius: 8,
+                                pointStyle: 'rectRot',
+                                showLine: false
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                title: { display: true, text: 'Reconstruction Error and Anomaly Threshold' }
+                            },
+                            scales: {
+                                x: { title: { display: true, text: 'Time Step' } },
+                                y: { title: { display: true, text: 'Loss Value' } }
+                            }
+                        }
+                    });
+
                 } else {
                     responseDiv.innerHTML = `<span class="error">Detection failed:</span> ${data.message}`;
                     responseDiv.className = 'response error';
-                }
-            } catch (error) {
+                    if (window.sensorReconstructionChart) window.sensorReconstructionChart.destroy();
+                    if (window.reconstructionLossChart) window.reconstructionLossChart.destroy();
+                }            } catch (error) {
                 responseDiv.innerHTML = `<span class="error">An error occurred during detection:</span> ${error.message}`;
                 responseDiv.className = 'response error';
             }

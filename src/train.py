@@ -64,8 +64,10 @@ def train():
 
         # Train the model
         logger.info(f"Starting model training for {config.NUM_EPOCHS} epochs.")
+        epoch_losses = [] # List to store loss per epoch
         try:
             for epoch in range(config.NUM_EPOCHS):
+                total_epoch_loss = 0
                 for data in train_loader:
                     seq, _ = data
                     seq = seq.to(device)
@@ -76,7 +78,11 @@ def train():
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
-                log_message = f'Epoch [{epoch+1}/{config.NUM_EPOCHS}], Loss: {loss.item():.4f}'
+                    total_epoch_loss += loss.item()
+                
+                avg_epoch_loss = total_epoch_loss / len(train_loader)
+                epoch_losses.append(avg_epoch_loss)
+                log_message = f'Epoch [{epoch+1}/{config.NUM_EPOCHS}], Loss: {avg_epoch_loss:.4f}'
                 logger.info(log_message)
                 training_log.append(log_message)
         except RuntimeError as e: # Catch specific PyTorch runtime errors, e.g., CUDA out of memory
@@ -108,7 +114,7 @@ def train():
             logger.error(f"An unexpected error occurred during ONNX export: {e}", exc_info=True)
             training_log.append(f"Warning: ONNX Model export failed due to an unexpected error: {e}")
 
-        return "\n".join(training_log)
+        return {"log": "\\n".join(training_log), "losses": epoch_losses}
 
     except RuntimeError as e:
         logger.error(f"Training process failed: {e}", exc_info=True)

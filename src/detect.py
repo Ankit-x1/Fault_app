@@ -167,7 +167,10 @@ def detect(data_stream_buffer=None):
             "message": "Anomaly detection complete.",
             "anomaly_threshold": float(threshold),
             "number_of_anomalies": int(np.sum(anomalies)),
-            "anomaly_indices": anomaly_indices
+            "anomaly_indices": anomaly_indices,
+            "input_data": data_to_form_sequences.tolist() if data_to_form_sequences is not None else [],
+            "reconstruction_data": detection_reconstruction.tolist(),
+            "reconstruction_loss": detection_loss.tolist()
         }
 
     except Exception as e:

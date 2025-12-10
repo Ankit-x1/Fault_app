@@ -75,9 +75,11 @@ def train_api():
     """
     logger.info("API call received: /api/train")
     try:
-        log_message = run_in_threadpool(train_model)
+        train_result = run_in_threadpool(train_model) # train_model now returns a dict
+        log_message = train_result.get("log", "Model training completed.")
+        epoch_losses = train_result.get("losses", [])
         logger.info("Model training completed successfully.")
-        return JSONResponse(content={"status": "success", "message": "Model training completed.", "log": log_message},
+        return JSONResponse(content={"status": "success", "message": "Model training completed.", "log": log_message, "losses": epoch_losses},
                             status_code=status.HTTP_200_OK)
     except Exception as e:
         logger.error(f"Error during training API call: {str(e)}", exc_info=True)
@@ -122,11 +124,8 @@ def detect_api(
         results = run_in_threadpool(detect_faults, data_stream_buffer=sensor_readings_np)
         
         logger.info(f"Detection API call results: {results.get('status', 'N/A')}")
-        return JSONResponse(content={"status": results["status"], "message": results.get("message", "No message provided."), "results": {
-            "anomaly_threshold": results.get("anomaly_threshold"),
-            "number_of_anomalies": results.get("number_of_anomalies"),
-            "anomaly_indices": results.get("anomaly_indices")
-        }}, status_code=status.HTTP_200_OK)
+        # Return the full results dictionary from detect_faults
+        return JSONResponse(content=results, status_code=status.HTTP_200_OK)
     except HTTPException as http_e:
         raise http_e
     except Exception as e:
